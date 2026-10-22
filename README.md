@@ -24,6 +24,17 @@ Imprime 4 *secrets* y 3 *variables* para guardar en GitHub
 El estado de Terraform vive en Azure Storage (`tfstate-rg`). No mezcles este flujo con
 `scripts/up.sh`: cada uno lleva su propio estado.
 
+## Agente: revisión automática de `terraform plan` (Azure AI Foundry)
+En cada pull request que toque `terraform/`, el workflow **Plan review** ejecuta `terraform plan`
+(solo lectura) y un modelo desplegado en Foundry comenta qué cambia, los riesgos y el costo estimado.
+
+Configuración (una vez), en Settings → Secrets and variables → Actions:
+- Secret `AZURE_OPENAI_API_KEY`: clave del recurso (portal de Foundry → Keys and Endpoint).
+- Variable `AZURE_OPENAI_ENDPOINT`: termina en `/openai/v1`.
+- Variable `AZURE_OPENAI_MODEL`: nombre exacto de la implementación (deployment).
+
+El prompt está en `.github/plan-review-prompt.md`; edítalo para cambiar el estilo o los precios de referencia.
+
 ## Atajo: scripts (Cloud Shell)
 ```bash
 ./scripts/up.sh      # terraform apply + imágenes + kubectl apply + muestra la IP
