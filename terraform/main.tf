@@ -36,4 +36,5 @@ resource "azurerm_role_assignment" "aks_acr_pull" {
   scope                            = azurerm_container_registry.acr.id
   skip_service_principal_aad_check = true
 }
-# prueba del agente
+
+# prueba 2 del agente
