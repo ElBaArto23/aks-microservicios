@@ -1,0 +1,16 @@
+ervices:
+  redis:
+    image: redis:7-alpine
+    network_mode: host
+  backend:
+    build: ./backend
+    network_mode: host
+    environment:
+      REDIS_HOST: 127.0.0.1
+    depends_on: [redis]
+  frontend:
+    build: ./frontend
+    network_mode: host
+    extra_hosts:
+      - "backend:127.0.0.1"
+    depends_on: [backend]
