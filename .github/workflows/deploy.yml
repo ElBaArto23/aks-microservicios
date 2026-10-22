@@ -1,0 +1,95 @@
+name: Deploy
+
+# Crea la infraestructura (Terraform), construye y sube las imágenes al ACR
+# y despliega en AKS. Se lanza a mano: pestaña Actions -> Deploy -> Run workflow.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: azure-infra
+  cancel-in-progress: false
+
+env:
+  ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+  ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+  ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+  ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  TF_VAR_subscription_id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  TF_VAR_acr_name: ${{ vars.ACR_NAME }}
+  TFSTATE_RG: ${{ vars.TFSTATE_RG }}
+  TFSTATE_SA: ${{ vars.TFSTATE_SA }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      # El estado vive en Azure Storage para que Deploy y Destroy compartan el mismo estado.
+      - name: Configurar backend remoto
+        working-directory: terraform
+        run: |
+          cat > backend_override.tf <<TF
+          terraform {
+            backend "azurerm" {
+              resource_group_name  = "${TFSTATE_RG}"
+              storage_account_name = "${TFSTATE_SA}"
+              container_name       = "tfstate"
+              key                  = "aks-microservicios.tfstate"
+            }
+          }
+          TF
+
+      - name: Terraform apply
+        working-directory: terraform
+        run: |
+          terraform init -input=false
+          terraform apply -auto-approve -input=false
+          echo "ACR_SERVER=$(terraform output -raw acr_login_server)" >> "$GITHUB_ENV"
+          echo "RG=$(terraform output -raw resource_group)" >> "$GITHUB_ENV"
+          echo "AKS=$(terraform output -raw aks_name)" >> "$GITHUB_ENV"
+
+      - name: Login en Azure
+        run: |
+          az login --service-principal \
+            --username "$ARM_CLIENT_ID" --password "$ARM_CLIENT_SECRET" --tenant "$ARM_TENANT_ID" >/dev/null
+          az account set --subscription "$ARM_SUBSCRIPTION_ID"
+
+      - name: Construir y subir imágenes
+        run: |
+          TAG="${GITHUB_SHA::7}"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          az acr login --name "${ACR_SERVER%%.*}"
+          for svc in backend frontend; do
+            docker build -t "$ACR_SERVER/$svc:$TAG" "./$svc"
+            docker push "$ACR_SERVER/$svc:$TAG"
+          done
+
+      - name: Desplegar en AKS
+        run: |
+          az aks get-credentials --resource-group "$RG" --name "$AKS" --overwrite-existing
+          for f in k8s/*.yaml; do
+            sed -e "s|ACR_LOGIN_SERVER|$ACR_SERVER|g" -e "s|:v1|:$TAG|g" "$f"
+            echo "---"
+          done | kubectl apply -f -
+          kubectl rollout status deployment/redis --timeout=180s
+          kubectl rollout status deployment/backend --timeout=180s
+          kubectl rollout status deployment/frontend --timeout=180s
+
+      - name: Obtener IP pública
+        run: |
+          for _ in $(seq 1 60); do
+            IP="$(kubectl get svc frontend -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)"
+            [ -n "$IP" ] && break
+            sleep 5
+          done
+          echo "App: http://${IP:-pendiente}"
+          echo "### App desplegada: http://${IP:-pendiente}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Recuerda ejecutar el workflow **Destroy** al terminar." >> "$GITHUB_STEP_SUMMARY"

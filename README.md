@@ -6,6 +6,32 @@ Frontend (Nginx) → Backend (FastAPI) → Redis, desplegado en Azure Kubernetes
 Con `Standard_D2as_v4` + ACR Basic + balanceador: ~US$0.10 por hora (~US$70–90 al mes).
 **Destruye todo al terminar** (paso 6).
 
+## Opción CI/CD: GitHub Actions (sin Docker local ni Codespaces)
+Los runners de GitHub traen Docker, así que construyen y suben las imágenes solos.
+
+**Preparación única** (Cloud Shell):
+```bash
+./scripts/bootstrap-github.sh
+```
+Imprime 4 *secrets* y 3 *variables* para guardar en GitHub
+(Settings → Secrets and variables → Actions). Pon tu nombre de ACR en `ACR_NAME`.
+
+**Uso:** pestaña *Actions* del repo.
+- **Deploy** (Run workflow): Terraform + imágenes + despliegue; la IP queda en el resumen de la ejecución.
+- **Destroy** (Run workflow): apaga todo. También corre cada noche a las 03:00 UTC como red de seguridad
+  (desactívalo con la variable de repositorio `AUTO_DESTROY = false`).
+
+El estado de Terraform vive en Azure Storage (`tfstate-rg`). No mezcles este flujo con
+`scripts/up.sh`: cada uno lleva su propio estado.
+
+## Atajo: scripts (Cloud Shell)
+```bash
+./scripts/up.sh      # terraform apply + imágenes + kubectl apply + muestra la IP
+./scripts/down.sh    # terraform destroy + verifica que el grupo ya no exista
+```
+`up.sh` intenta `az acr build`; si ACR Tasks está bloqueado, te indica cómo subir las imágenes
+con `./scripts/push-images.sh <acr>.azurecr.io` desde Codespaces. Los pasos 2–6 siguientes son el detalle manual.
+
 ## 1. Probar en local
 ```bash
 docker compose up --build

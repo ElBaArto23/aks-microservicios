@@ -1,0 +1,68 @@
+name: Destroy
+
+# Destruye toda la infraestructura para dejar de consumir crédito.
+# Manual: Actions -> Destroy -> Run workflow. También corre cada noche como red de seguridad
+# (para desactivar el apagado nocturno, crea la variable de repositorio AUTO_DESTROY = false).
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: azure-infra
+  cancel-in-progress: false
+
+env:
+  ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+  ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+  ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+  ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  TF_VAR_subscription_id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  TF_VAR_acr_name: ${{ vars.ACR_NAME }}
+  TFSTATE_RG: ${{ vars.TFSTATE_RG }}
+  TFSTATE_SA: ${{ vars.TFSTATE_SA }}
+
+jobs:
+  destroy:
+    if: github.event_name != 'schedule' || vars.AUTO_DESTROY != 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Configurar backend remoto
+        working-directory: terraform
+        run: |
+          cat > backend_override.tf <<TF
+          terraform {
+            backend "azurerm" {
+              resource_group_name  = "${TFSTATE_RG}"
+              storage_account_name = "${TFSTATE_SA}"
+              container_name       = "tfstate"
+              key                  = "aks-microservicios.tfstate"
+            }
+          }
+          TF
+
+      - name: Terraform destroy
+        working-directory: terraform
+        run: |
+          terraform init -input=false
+          terraform destroy -auto-approve -input=false
+
+      - name: Verificar y limpiar si quedó algo
+        run: |
+          az login --service-principal \
+            --username "$ARM_CLIENT_ID" --password "$ARM_CLIENT_SECRET" --tenant "$ARM_TENANT_ID" >/dev/null
+          az account set --subscription "$ARM_SUBSCRIPTION_ID"
+          if [ "$(az group exists --name microsvc-rg)" = "true" ]; then
+            echo "El grupo sigue existiendo; borrándolo directamente"
+            az group delete --name microsvc-rg --yes
+          fi
+          echo "### Destruido: microsvc-rg ya no existe" >> "$GITHUB_STEP_SUMMARY"
