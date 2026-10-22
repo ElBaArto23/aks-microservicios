@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Contador de visitas</title>
+  <style>
+    body { font-family: system-ui, sans-serif; display: grid; place-items: center; min-height: 100vh; margin: 0; background: #f4f6f8; }
+    main { background: #fff; padding: 2rem 3rem; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,.1); text-align: center; }
+    #n { font-size: 3rem; font-weight: 700; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Visitas</h1>
+    <div id="n">…</div>
+    <p id="pod"></p>
+  </main>
+  <script>
+    fetch("/api/visitas")
+      .then(r => r.ok ? r.json() : Promise.reject(r.status))
+      .then(d => { n.textContent = d.visitas; pod.textContent = "Atendido por: " + d.pod; })
+      .catch(() => { n.textContent = "Error"; });
+  </script>
+</body>
+</html>
