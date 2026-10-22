@@ -3,6 +3,7 @@ name: Plan review
 # En cada pull request que toque terraform/, ejecuta `terraform plan` (solo lectura) y pide a un
 # modelo desplegado en Azure AI Foundry que lo explique: qué cambia, riesgos y costo.
 on:
+  workflow_dispatch:
   pull_request:
     paths:
       - "terraform/**"
@@ -26,6 +27,7 @@ env:
 jobs:
   review:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -62,6 +64,12 @@ jobs:
           AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
           AZURE_OPENAI_MODEL: ${{ vars.AZURE_OPENAI_MODEL }}
         run: |
+          # Diagnóstico sin mostrar secretos
+          echo "Endpoint definido: ${AZURE_OPENAI_ENDPOINT:+sí}"
+          echo "Modelo definido: ${AZURE_OPENAI_MODEL:+sí} (${AZURE_OPENAI_MODEL:-vacío})"
+          echo "Clave definida: ${AZURE_OPENAI_API_KEY:+sí}"
+          echo "URL: ${AZURE_OPENAI_ENDPOINT%/}/chat/completions"
+
           jq -n \
             --arg model "$AZURE_OPENAI_MODEL" \
             --rawfile system .github/plan-review-prompt.md \
@@ -71,21 +79,31 @@ jobs:
                {role: "user", content: ("Salida de terraform plan:\n\n```\n" + $plan + "\n```")}
              ]}' > "$RUNNER_TEMP/request.json"
 
-          HTTP=$(curl -sS -o "$RUNNER_TEMP/response.json" -w '%{http_code}' \
+          set +e
+          HTTP=$(curl -sS --connect-timeout 15 --max-time 180 \
+            -o "$RUNNER_TEMP/response.json" -w '%{http_code}' \
             "${AZURE_OPENAI_ENDPOINT%/}/chat/completions" \
             -H "Content-Type: application/json" \
             -H "api-key: $AZURE_OPENAI_API_KEY" \
-            -d @"$RUNNER_TEMP/request.json" || echo 000)
+            -d @"$RUNNER_TEMP/request.json" 2> "$RUNNER_TEMP/curl_err.txt")
+          CURL_EXIT=$?
+          set -e
+          echo "curl exit code: $CURL_EXIT / HTTP: $HTTP"
+          cat "$RUNNER_TEMP/curl_err.txt" || true
+          cat "$RUNNER_TEMP/response.json" 2>/dev/null | head -c 1500 || true
 
           {
             echo "## Revisión automática de \`terraform plan\`"
             echo
-            if [ "$HTTP" = "200" ] && jq -e '.choices[0].message.content' "$RUNNER_TEMP/response.json" >/dev/null; then
+            if [ "$HTTP" = "200" ] && jq -e '.choices[0].message.content' "$RUNNER_TEMP/response.json" >/dev/null 2>&1; then
               jq -r '.choices[0].message.content' "$RUNNER_TEMP/response.json"
             else
-              echo "No se pudo generar la revisión (HTTP $HTTP). Revisa el endpoint, el nombre del modelo y la clave."
+              echo "No se pudo generar la revisión (curl: $CURL_EXIT, HTTP: $HTTP)."
               echo
-              jq -r '.error.message // empty' "$RUNNER_TEMP/response.json" 2>/dev/null || true
+              echo '```'
+              head -c 600 "$RUNNER_TEMP/curl_err.txt" || true
+              jq -r '.error.message // empty' "$RUNNER_TEMP/response.json" 2>/dev/null | head -c 600 || true
+              echo '```'
             fi
             echo
             echo "<details><summary>terraform plan completo</summary>"
@@ -97,8 +115,11 @@ jobs:
             echo
             echo "_Generado por un modelo de IA; verifica antes de aprobar._"
           } > "$RUNNER_TEMP/review.md"
+          cp "$RUNNER_TEMP/review.md" "$GITHUB_STEP_SUMMARY"
 
       - name: Comentar en el pull request
+        if: github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
+        run: gh pr comment "${{ github.event.pull_request.number }}" --repo "${{ github.repository }}" --body-file "$RUNNER_TEMP/review.md"
         run: gh pr comment "${{ github.event.pull_request.number }}" --repo "${{ github.repository }}" --body-file "$RUNNER_TEMP/review.md"
