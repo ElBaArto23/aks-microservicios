@@ -18,6 +18,9 @@ spec:
           env:
             - name: REDIS_HOST
               value: redis
+            # Kubernetes inyecta REDIS_PORT=tcp://... por el Service "redis"; se fija explícito
+            - name: REDIS_PORT
+              value: "6379"
           readinessProbe:
             httpGet: { path: /health, port: 8000 }
           livenessProbe:

@@ -1,4 +1,7 @@
-ervices:
+# Alternativa para GitHub Codespaces, donde la red entre contenedores de Docker
+# está bloqueada. Usa la red del host, por lo que la app queda en el puerto 80.
+# Uso: docker compose -f docker-compose.codespaces.yml up --build
+services:
   redis:
     image: redis:7-alpine
     network_mode: host

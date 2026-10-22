@@ -21,7 +21,7 @@ variable "acr_name" {
 }
 
 variable "node_vm_size" {
-  description = "Tamaño de la VM del nodo"
+  description = "Tamaño de la VM del nodo (Standard_B2s no está permitido en algunas suscripciones gratuitas)"
   type        = string
-  default     = "Standard_B2s"
+  default     = "Standard_D2as_v4"
 }

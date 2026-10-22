@@ -2,40 +2,84 @@
 
 Frontend (Nginx) → Backend (FastAPI) → Redis, desplegado en Azure Kubernetes Service.
 
+## Costo aproximado
+Con `Standard_D2as_v4` + ACR Basic + balanceador: ~US$0.10 por hora (~US$70–90 al mes).
+**Destruye todo al terminar** (paso 6).
+
 ## 1. Probar en local
 ```bash
 docker compose up --build
-# abrir http://localhost:8080 (cada recarga suma una visita)
+# http://localhost:8080 (cada recarga suma una visita)
+```
+En GitHub Codespaces la red entre contenedores está bloqueada; usa en su lugar:
+```bash
+docker compose -f docker-compose.codespaces.yml up --build
+# Abrir el puerto 80 (añadirlo a mano en la pestaña Ports si no aparece)
 ```
 
-## 2. Crear la infraestructura
+## 2. Crear la infraestructura (Azure Cloud Shell, Bash)
 ```bash
-az login
-cd terraform
+git clone https://github.com/<usuario>/aks-microservicios.git
+cd aks-microservicios/terraform
 cp terraform.tfvars.example terraform.tfvars   # editar subscription_id y acr_name
+az account show --query id -o tsv              # subscription_id
 terraform init
+terraform validate
+terraform plan
 terraform apply
 ```
+Si tu suscripción rechaza el tamaño de VM, cambia `node_vm_size` en `terraform.tfvars`
+(el error lista los tamaños permitidos).
 
 ## 3. Publicar imágenes
+Intenta primero `az acr build` (no requiere Docker):
 ```bash
 ACR=<acr_name>
-az acr login --name $ACR
-docker build -t $ACR.azurecr.io/backend:v1 ./backend
-docker build -t $ACR.azurecr.io/frontend:v1 ./frontend
-docker push $ACR.azurecr.io/backend:v1
-docker push $ACR.azurecr.io/frontend:v1
+az acr build --registry $ACR --image backend:v1 ./backend
+az acr build --registry $ACR --image frontend:v1 ./frontend
 ```
+Si da `TasksOperationsNotAllowed` (ACR Tasks bloqueado en cuentas gratuitas), construye
+con Docker desde **Codespaces** (Cloud Shell no tiene daemon de Docker):
 
-## 4. Desplegar en Kubernetes
+1. En Cloud Shell, genera un token temporal (~3 h, tratarlo como contraseña):
+   ```bash
+   az acr login --name $ACR --expose-token --output tsv --query accessToken
+   ```
+2. En el Codespace:
+   ```bash
+   docker login $ACR.azurecr.io --username 00000000-0000-0000-0000-000000000000 --password '<TOKEN>'
+   docker build -t $ACR.azurecr.io/backend:v1 ./backend
+   docker build -t $ACR.azurecr.io/frontend:v1 ./frontend
+   docker push $ACR.azurecr.io/backend:v1
+   docker push $ACR.azurecr.io/frontend:v1
+   ```
+3. Verifica en Cloud Shell: `az acr repository list --name $ACR -o table`
+
+## 4. Desplegar en Kubernetes (Cloud Shell)
 ```bash
 az aks get-credentials --resource-group microsvc-rg --name microsvc-aks
 sed -i "s|ACR_LOGIN_SERVER|$ACR.azurecr.io|" k8s/backend.yaml k8s/frontend.yaml
 kubectl apply -f k8s/
-kubectl get svc frontend -w     # esperar la EXTERNAL-IP
+kubectl get pods
+kubectl get svc frontend -w     # esperar la EXTERNAL-IP y abrir http://<IP>
 ```
 
-## 5. Destruir (¡siempre al terminar!)
+## 5. Diagnóstico rápido
+```bash
+kubectl get pods
+kubectl logs <pod>
+kubectl describe pod <pod>
+```
+Nota: Kubernetes inyecta variables como `REDIS_PORT=tcp://...` por cada Service. Por eso
+`k8s/backend.yaml` fija `REDIS_PORT: "6379"` de forma explícita.
+
+## 6. Destruir (¡siempre al terminar!)
 ```bash
 cd terraform && terraform destroy
+az group exists --name microsvc-rg     # debe responder false
+```
+Si `terraform destroy` falla por un bloqueo de estado tras una desconexión:
+```bash
+az group delete --name microsvc-rg --yes --no-wait
+rm -f terraform.tfstate terraform.tfstate.backup .terraform.tfstate.lock.info
 ```
